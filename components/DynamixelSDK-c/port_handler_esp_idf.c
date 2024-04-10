@@ -30,12 +30,32 @@
 #include "hal/uart_hal.h"
 #include "soc/uart_periph.h"
 
-#include <esp32/rom/ets_sys.h> // microsecond delay
+#include <rom/ets_sys.h> // microsecond delay
+#include <esp_timer.h>
 
 #include "esp_log.h"
 #include "sdkconfig.h"
 
 #include <esp_heap_caps.h>
+
+
+// PIN configuration goes here (for the moment)
+#define PORT_HANDLER_ESP_IDF_UART0_TXPIN  0
+#define PORT_HANDLER_ESP_IDF_UART0_RXPIN  0
+#define PORT_HANDLER_ESP_IDF_UART0_ENPIN  0
+
+#define PORT_HANDLER_ESP_IDF_UART1_TXPIN  (14)  // default: 10
+#define PORT_HANDLER_ESP_IDF_UART1_RXPIN  (15)   // default: 9
+#define PORT_HANDLER_ESP_IDF_UART1_ENPIN  (2)
+
+#define PORT_HANDLER_ESP_IDF_UART2_TXPIN  (17)
+#define PORT_HANDLER_ESP_IDF_UART2_RXPIN  (16)
+#define PORT_HANDLER_ESP_IDF_UART2_ENPIN  0
+
+#define PORT_HANDLER_ESP_IDF_UART_MAX   3
+
+#define PORT_HANDLER_ESP_IDF_BUF_SIZE 1024
+
 
 // This implements the Dynamix low level interface to the ESP-IDF UART communication system.
 // ESP-IDF is the RTOS used with ESP32 and related SOCs, and includes specific interfaces
@@ -45,7 +65,7 @@
 // This code will be targeted at ESP-IDF 4.2 and should work within the 4.x ESP-IDF system.
 //
 
-#include "port_handler_esp_idf.h"
+#include "port_handler.h"
 
 #define LATENCY_TIMER  16  // msec (USB latency timer)
                            // You should adjust the latency timer value. From the version Ubuntu 16.04.2, the default latency timer of the usb serial is '16 msec'.
@@ -102,11 +122,22 @@ typedef struct
 static PortData *portData = 0;
 
 
+int     g_used_port_num;
+uint8_t *g_is_using;
+
 inline void IRAM_ATTR esp_delay_us(uint32_t delay) {
   uint64_t t0 = esp_timer_get_time();
   while ( (esp_timer_get_time() - t0) < delay) {
     ;
   }
+}
+
+
+// time sinze packet start
+
+double getTimeSinceStartEspIdf(int port_num)
+{
+  return ((double)(esp_timer_get_time() - portData[port_num].packet_start_time) * 1000.0);
 }
 
 
@@ -117,7 +148,7 @@ inline void IRAM_ATTR esp_delay_us(uint32_t delay) {
 // UART0 , UART1, UART2 are the valid strings
 
 
-int portHandlerEspIdf(const char *port_name)
+int portHandler(const char *port_name)
 {
   int port_num;
 
@@ -196,207 +227,7 @@ int portHandlerEspIdf(const char *port_name)
   return port_num;
 }
 
-uint8_t openPortEspIdf(int port_num)
-{
-  return( setupPortEspIdf(port_num ) );
-
-}
-
-void closePortEspIdf(int port_num)
-{
-
-  if (portData[port_num].inuse)
-  {
-    if (portData[port_num].opened) {
-      ESP_ERROR_CHECK( uart_driver_delete(portData[port_num].uart_num) );
-      portData[port_num].opened = false;
-    }
-
-    ESP_LOGI(TAG, "Close Port EspIdf: delete driver: uart %d",portData[port_num].uart_num);
-    ESP_ERROR_CHECK( uart_driver_delete(portData[port_num].uart_num) );
-    portData[port_num].inuse = false;
-  }
-}
-
-// clear all INPUT bytes from the queue
-void clearPortEspIdf(int port_num)
-{
-  uart_flush( portData[port_num].uart_num );
-}
-
-// janky
-char *getPortNameEspIdf(int port_num)
-{
-  return portData[port_num].port_name;
-}
-
-//
-// Overloading 'setBaudRate' with setupPort is poor form
-
-uint8_t setBaudRateEspIdf(int port_num, const int baudrate)
-{
-  if (portData[port_num].opened) {
-    ESP_LOGI(TAG, " do not set baud rate after opening, close first ");
-    return False;
-  }
-
-  portData[port_num].baudrate = baudrate;
-
-  return True;
-}
-
-int getBaudRateEspIdf(int port_num)
-{
-  return portData[port_num].baudrate;
-}
-
-int getBytesAvailableEspIdf(int port_num)
-{
-  size_t bytes_available;
-  if (ESP_OK != uart_get_buffered_data_len(portData[port_num].uart_num, &bytes_available)) {
-    ESP_LOGI(TAG, "Error on uarg_get_buffered_data_len");
-    bytes_available = 0;
-  }
-  return bytes_available;
-}
-
-// Since ESP-IDF supports a wait with timeout, we could wait at least a small amount
-// of time ( a few ticks ) hoping to receive the full buffer. This is almost certainly
-// going to be better than tripping up to the upper level?
-//
-// NB: implement with a straight read and no timeout, consider improving later :-/
-int IRAM_ATTR readPortEspIdf(int port_num, uint8_t *packet, int length)
-{
-#if 0
-  size_t read_len;
-  ESP_ERROR_CHECK(uart_get_buffered_data_len(portData[port_num].uart_num, &read_len));
-  if (read_len == 0) {
-    ESP_LOGI(TAG, " readPortEspIdf: no bytes to read\n");
-    return(0);
-  }
-  if (read_len > length) read_len = length;
-#endif
-
-  //uint64_t t_start = esp_timer_get_time();
-
-  int read_len = uart_read_bytes(portData[port_num].uart_num, packet, length, 150 /*ticks to wait*/);
-  if (read_len < 0) {
-    // not sure what right here
-    ESP_LOGI(TAG, " readPortEspIdf: uart_read_bytes returned error, clamped to 0");
-    read_len = 0;
-  }
-
-//  uint64_t t_end = esp_timer_get_time();
-//  printf("readPort: len_read %d t_delta %llu\n",read_len,t_end-t_start);
-
-  return(read_len);
-}
-
-volatile int g_delay_volatile = 0;
-
-int IRAM_ATTR writePortEspIdf(int port_num, uint8_t *packet, int length)
-{
-
-//  uint32_t cc_start = __clock_cycles();
-//  uint64_t t_start = esp_timer_get_time();
-
-  /* enable while transmitting */
-  gpio_set_level(portData[port_num].en_pin, 1);
-
-  // note: this copies to the Tx FIFO buffer, it doesn't send it - that should be OK
-  // other choices are uart_wait_tx_done(), which waits until the TX buff is drained,
-  // or uart_tx_chars(), which is non-blocking and returns the number of bytes written
-  int r = uart_write_bytes(portData[port_num].uart_num, (const char*)packet, length);
-  if (r < 0) {
-    ESP_LOGI(TAG, "writePortEspIdf: uart_write_bytes returned %d unexpected",r);
-    gpio_set_level(portData[port_num].en_pin, 0);
-    return(0);
-  }
-
-#if 0 // THIS WAY WORKS BUT IS SLOW
-// If we set the tx buffer size to 0, then we don't have to wait?
-  if ( ESP_OK != uart_wait_tx_done(portData[port_num].uart_num,  100 /*os ticks to wait*/) ) {
-    ESP_LOGI(TAG, "writePortEspIdf: uart_wait_tx_done returned not ok unexpected");
-    gpio_set_level(portData[port_num].en_pin, 0);
-    return(0);
-  }
-#endif
-
-  // Trying to speed things up by cutting out all the middlepeople and ignoring the timouts,
-  // and using the smallest possible delay
-
-// low level code to check if the output buffer is flushed.
-// commenting it out because the GPIO is going too slow at 4Mb
-// this works great if the Servo has a 20us delay. However, it seems we're holding
-// the gpio line up about 150us longer than we need using this, which doesn't work at 4mhz with 0 delay (just by a little).
-  while (false == uart_ll_is_tx_idle(UART_LL_GET_HW(portData[port_num].uart_num) ) ) {
-      ets_delay_us(1);
-  }
-
- // these just delay way too long. Not just doing a few us.
- //ets_delay_us(0);
- //esp_delay_us(1);
-
-//  for (int i=0;i<100;i++) {
-//    g_delay_volatile += 1;
-//  }
-
-  // disable when done
-  gpio_set_level(portData[port_num].en_pin, 0);
-
-//  uint32_t cc_end = __clock_cycles();
-//  uint64_t t_end = esp_timer_get_time();
-
-//  printf(" clock_cycles start: %u end: %u delta: %u\n",cc_start,cc_end,cc_end-cc_start);
-//  printf(" esp_timer start: %llu end %llu delta %llu\n",t_start,t_end,t_end-t_start);
-
-  return(r);
-}
-
-void setPacketTimeoutEspIdf(int port_num, uint16_t packet_length)
-{
-  portData[port_num].packet_start_time = getCurrentTimeEspIdf();
-  portData[port_num].packet_timeout = ((portData[port_num].tx_time_per_byte * packet_length) / 1000) + (LATENCY_TIMER * 2.0) + 2.0;
-  //portData[port_num].packet_timeout *= 2.0;
-  //printf("SetPacketTimeout Bytes: %.6f\n",portData[port_num].packet_timeout);
-}
-
-void setPacketTimeoutMSecEspIdf(int port_num, double msec)
-{
-  portData[port_num].packet_start_time = getCurrentTimeEspIdf();
-  portData[port_num].packet_timeout = msec;
-  //portData[port_num].packet_timeout *= 2.0;
-  //printf("SetPacketTimeout Msec: %.6f\n",portData[port_num].packet_timeout);
-}
-
-uint8_t isPacketTimeoutEspIdf(int port_num)
-{
-  double tss = getTimeSinceStartEspIdf(port_num);
-  if (tss > portData[port_num].packet_timeout)
-  {
-    portData[port_num].packet_timeout = 0;
-    return True;
-  }
-  return False;
-}
-
-// fixed point microseconds
-uint64_t getCurrentTimeEspIdf()
-{
-  return( esp_timer_get_time() );
-}
-
-// time sinze packet start
-
-double getTimeSinceStartEspIdf(int port_num)
-{
-  return ((double)(getCurrentTimeEspIdf() - portData[port_num].packet_start_time) * 1000.0);
-}
-
-//
-// Note: I have arranged that port_num is uart_num
-
-uint8_t setupPortEspIdf(int port_num)
+uint8_t openPort(int port_num)
 {
   PortData *pd = &portData[port_num];
 
@@ -468,7 +299,192 @@ uint8_t setupPortEspIdf(int port_num)
     pd->opened = true;
 
 
-  return True; // success is generall 0. Boooooo.
+  return True; 
 }
+
+void closePort(int port_num)
+{
+
+  if (portData[port_num].inuse)
+  {
+    if (portData[port_num].opened) {
+      ESP_ERROR_CHECK( uart_driver_delete(portData[port_num].uart_num) );
+      portData[port_num].opened = false;
+    }
+
+    ESP_LOGI(TAG, "Close Port EspIdf: delete driver: uart %d",portData[port_num].uart_num);
+    ESP_ERROR_CHECK( uart_driver_delete(portData[port_num].uart_num) );
+    portData[port_num].inuse = false;
+  }
+}
+
+// clear all INPUT bytes from the queue
+void clearPort(int port_num)
+{
+  uart_flush( portData[port_num].uart_num );
+}
+
+// janky
+char *getPortName(int port_num)
+{
+  return portData[port_num].port_name;
+}
+
+//
+// Overloading 'setBaudRate' with setupPort is poor form
+
+uint8_t setBaudRate(int port_num, const int baudrate)
+{
+  if (portData[port_num].opened) {
+    ESP_LOGI(TAG, " do not set baud rate after opening, close first ");
+    return False;
+  }
+
+  portData[port_num].baudrate = baudrate;
+
+  return True;
+}
+
+int getBaudRate(int port_num)
+{
+  return portData[port_num].baudrate;
+}
+
+int getBytesAvailable(int port_num)
+{
+  size_t bytes_available;
+  if (ESP_OK != uart_get_buffered_data_len(portData[port_num].uart_num, &bytes_available)) {
+    ESP_LOGI(TAG, "Error on uarg_get_buffered_data_len");
+    bytes_available = 0;
+  }
+  return bytes_available;
+}
+
+// Since ESP-IDF supports a wait with timeout, we could wait at least a small amount
+// of time ( a few ticks ) hoping to receive the full buffer. This is almost certainly
+// going to be better than tripping up to the upper level?
+//
+// NB: implement with a straight read and no timeout, consider improving later :-/
+int IRAM_ATTR readPort(int port_num, uint8_t *packet, int length)
+{
+#if 0
+  size_t read_len;
+  ESP_ERROR_CHECK(uart_get_buffered_data_len(portData[port_num].uart_num, &read_len));
+  if (read_len == 0) {
+    ESP_LOGI(TAG, " readPortEspIdf: no bytes to read\n");
+    return(0);
+  }
+  if (read_len > length) read_len = length;
+#endif
+
+  //uint64_t t_start = esp_timer_get_time();
+
+  int read_len = uart_read_bytes(portData[port_num].uart_num, packet, length, 150 /*ticks to wait*/);
+  if (read_len < 0) {
+    // not sure what right here
+    ESP_LOGI(TAG, " readPortEspIdf: uart_read_bytes returned error, clamped to 0");
+    read_len = 0;
+  }
+
+//  uint64_t t_end = esp_timer_get_time();
+//  printf("readPort: len_read %d t_delta %llu\n",read_len,t_end-t_start);
+
+  return(read_len);
+}
+
+volatile int g_delay_volatile = 0;
+
+int IRAM_ATTR writePort(int port_num, uint8_t *packet, int length)
+{
+
+//  uint32_t cc_start = __clock_cycles();
+//  uint64_t t_start = esp_timer_get_time();
+
+  /* enable while transmitting */
+  gpio_set_level(portData[port_num].en_pin, 1);
+
+  // note: this copies to the Tx FIFO buffer, it doesn't send it - that should be OK
+  // other choices are uart_wait_tx_done(), which waits until the TX buff is drained,
+  // or uart_tx_chars(), which is non-blocking and returns the number of bytes written
+  int r = uart_write_bytes(portData[port_num].uart_num, (const char*)packet, length);
+  if (r < 0) {
+    ESP_LOGI(TAG, "writePortEspIdf: uart_write_bytes returned %d unexpected",r);
+    gpio_set_level(portData[port_num].en_pin, 0);
+    return(0);
+  }
+
+#if 0 // THIS WAY WORKS BUT IS SLOW
+// If we set the tx buffer size to 0, then we don't have to wait?
+  if ( ESP_OK != uart_wait_tx_done(portData[port_num].uart_num,  100 /*os ticks to wait*/) ) {
+    ESP_LOGI(TAG, "writePortEspIdf: uart_wait_tx_done returned not ok unexpected");
+    gpio_set_level(portData[port_num].en_pin, 0);
+    return(0);
+  }
+#endif
+
+  // Trying to speed things up by cutting out all the middlepeople and ignoring the timouts,
+  // and using the smallest possible delay
+
+// low level code to check if the output buffer is flushed.
+// commenting it out because the GPIO is going too slow at 4Mb
+// this works great if the Servo has a 20us delay. However, it seems we're holding
+// the gpio line up about 150us longer than we need using this, which doesn't work at 4mhz with 0 delay (just by a little).
+  while (false == uart_ll_is_tx_idle(UART_LL_GET_HW(portData[port_num].uart_num) ) ) {
+      ets_delay_us(1);
+  }
+
+ // these just delay way too long. Not just doing a few us.
+ //ets_delay_us(0);
+ //esp_delay_us(1);
+
+//  for (int i=0;i<100;i++) {
+//    g_delay_volatile += 1;
+//  }
+
+  // disable when done
+  gpio_set_level(portData[port_num].en_pin, 0);
+
+//  uint32_t cc_end = __clock_cycles();
+//  uint64_t t_end = esp_timer_get_time();
+
+//  printf(" clock_cycles start: %u end: %u delta: %u\n",cc_start,cc_end,cc_end-cc_start);
+//  printf(" esp_timer start: %llu end %llu delta %llu\n",t_start,t_end,t_end-t_start);
+
+  return(r);
+}
+
+void setPacketTimeout(int port_num, uint16_t packet_length)
+{
+  portData[port_num].packet_start_time = esp_timer_get_time();
+  portData[port_num].packet_timeout = ((portData[port_num].tx_time_per_byte * packet_length) / 1000) + (LATENCY_TIMER * 2.0) + 2.0;
+  //portData[port_num].packet_timeout *= 2.0;
+  //printf("SetPacketTimeout Bytes: %.6f\n",portData[port_num].packet_timeout);
+}
+
+void setPacketTimeoutMSec(int port_num, double msec)
+{
+  portData[port_num].packet_start_time = esp_timer_get_time();
+  portData[port_num].packet_timeout = msec;
+  //portData[port_num].packet_timeout *= 2.0;
+  //printf("SetPacketTimeout Msec: %.6f\n",portData[port_num].packet_timeout);
+}
+
+uint8_t isPacketTimeout(int port_num)
+{
+  double tss = getTimeSinceStartEspIdf(port_num);
+  if (tss > portData[port_num].packet_timeout)
+  {
+    portData[port_num].packet_timeout = 0;
+    return True;
+  }
+  return False;
+}
+
+
+
+
+
+//
+// Note: I have arranged that port_num is uart_num
 
 

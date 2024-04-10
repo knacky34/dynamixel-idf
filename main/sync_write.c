@@ -35,7 +35,7 @@
 #include <stdbool.h>
 #include <time.h>
 
-#include <esp32/rom/ets_sys.h>      // best usec delay function'
+#include <rom/ets_sys.h>      // best usec delay function'
 #include <esp_timer.h> // timing to find out wtf
 
 

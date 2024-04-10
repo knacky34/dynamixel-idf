@@ -1,8 +1,4 @@
-# Edit following two lines to set component requirements (see docs)
-set(COMPONENT_REQUIRES )
-set(COMPONENT_PRIV_REQUIRES )
+idf_component_register(SRCS "sync_write.c"
+                    INCLUDE_DIRS "." REQUIRES dynamixel_sdk_esp)
 
-set(COMPONENT_SRCS "sync_write.c")
-set(COMPONENT_ADD_INCLUDEDIRS "")
-
-register_component()
+target_compile_options(${COMPONENT_LIB} PRIVATE -Wno-error=format)

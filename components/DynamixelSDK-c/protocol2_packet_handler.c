@@ -28,6 +28,9 @@
 #include "protocol2_packet_handler.h"
 
 
+
+#include <rom/ets_sys.h>
+
 #define TXPACKET_MAX_LEN    (1*1024)
 #define RXPACKET_MAX_LEN    (1*1024)
 
